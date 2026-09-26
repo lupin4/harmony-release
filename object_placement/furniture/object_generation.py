@@ -42,6 +42,27 @@ _FLAT_TYPES = {"carpet", "rug"}
 VLM_API_URL = "http://localhost:8080/v1/chat/completions"
 
 
+# Rung C2 (boxmaker): also send the scene photo + this segment's mask, so a
+# generator that accepts them (SAM 3D) reconstructs the real object instead of
+# the inpainted crop. Off by default; stock Hunyuan3D ignores unknown fields.
+_SEND_PHOTO_MASK = os.environ.get("SCENEWEAVE_GEN3D_PHOTO_MASK") == "1"
+
+
+def _photo_mask(results: dict, seg: dict, seg_dir: Path) -> "tuple[Path, Path] | None":
+    """(scene photo, segment mask PNG) for SCENEWEAVE_GEN3D_PHOTO_MASK=1, else None."""
+    if not _SEND_PHOTO_MASK:
+        return None
+    photo, mask = results.get("image"), seg.get("mask_file")
+    if not photo or not mask:
+        print("  [c2] no photo/mask recorded for this segment — sending the crop only")
+        return None
+    photo, mask = Path(photo), seg_dir / mask
+    if not (photo.exists() and mask.exists()):
+        print(f"  [c2] missing {photo if not photo.exists() else mask} — sending the crop only")
+        return None
+    return photo, mask
+
+
 class HunyuanUnmeshableError(Exception):
     """Hunyuan3D answered 404 — the known can't-mesh-this signature (typically
     a glass/transparent object deadlocking marching cubes). A caller should
@@ -61,7 +82,8 @@ def _hunyuan_available(server: str = HUNYUAN_SERVER) -> bool:
 
 def _generate_hunyuan(image_path: Path, glb_path: Path,
                       server: str = HUNYUAN_SERVER,
-                      texture: bool = True) -> bool:
+                      texture: bool = True,
+                      photo_mask: "tuple[Path, Path] | None" = None) -> bool:
     """Generate a GLB via the Hunyuan3D API server. Returns True on success.
 
     Under SCENEWEAVE_HUNYUAN_ONLY, if the request fails because
@@ -86,6 +108,9 @@ def _generate_hunyuan(image_path: Path, glb_path: Path,
             # (e.g. 384) when a large GPU is available.
             _octree = int(os.environ.get("SCENEWEAVE_HUNYUAN_OCTREE", "128") or 128)
             _req = {"image": img_b64, "texture": texture, "octree_resolution": _octree}
+            if photo_mask:
+                _req["photo"] = base64.b64encode(photo_mask[0].read_bytes()).decode()
+                _req["mask"] = base64.b64encode(photo_mask[1].read_bytes()).decode()
             _fc = os.environ.get("SCENEWEAVE_HUNYUAN_FACECOUNT")
             if _fc:
                 _req["face_count"] = int(_fc)
@@ -482,7 +507,8 @@ def run(
 
             gen_ok = False
             try:
-                gen_ok = _generate_hunyuan(src, glb_path)
+                gen_ok = _generate_hunyuan(src, glb_path,
+                                           photo_mask=_photo_mask(data, seg, seg_dir))
             except HunyuanUnmeshableError as e:
                 print(f"  [hunyuan] {e}")
                 if reinpainted_for_404:
@@ -495,7 +521,8 @@ def run(
                     break
                 src = new_src
                 try:
-                    gen_ok = _generate_hunyuan(src, glb_path)
+                    gen_ok = _generate_hunyuan(src, glb_path,
+                                               photo_mask=_photo_mask(data, seg, seg_dir))
                 except HunyuanUnmeshableError as e2:
                     print(f"  [hunyuan] still unmeshable after re-inpaint: {e2}")
                     gen_ok = False

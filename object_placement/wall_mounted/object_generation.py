@@ -30,6 +30,7 @@ from object_placement.furniture.object_generation import (
     HunyuanUnmeshableError,
     _generate_hunyuan,
     _hunyuan_available,
+    _photo_mask,
 )
 
 
@@ -181,7 +182,8 @@ def run(wall_mounted_dir: str | Path,
         # 3D path (mirror, shelf, cabinet, light, …) via Hunyuan3D. On the
         # known unmeshable-object 404, re-inpaint as opaque and retry once.
         try:
-            gen_ok = _generate_hunyuan(src, glb_path)
+            gen_ok = _generate_hunyuan(src, glb_path,
+                                       photo_mask=_photo_mask(data, seg, seg_dir))
         except HunyuanUnmeshableError as e:
             print(f"  [hunyuan] {e}")
             new_src = _reinpaint_opaque(wm_dir.parent, idx)
@@ -189,7 +191,8 @@ def run(wall_mounted_dir: str | Path,
                 print(f"  [reinpaint] failed — skipping idx={idx}")
                 continue
             try:
-                gen_ok = _generate_hunyuan(new_src, glb_path)
+                gen_ok = _generate_hunyuan(new_src, glb_path,
+                                           photo_mask=_photo_mask(data, seg, seg_dir))
             except HunyuanUnmeshableError as e2:
                 print(f"  [hunyuan] still unmeshable after re-inpaint: {e2}")
                 gen_ok = False
