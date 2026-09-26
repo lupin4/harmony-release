@@ -42,25 +42,34 @@ _FLAT_TYPES = {"carpet", "rug"}
 VLM_API_URL = "http://localhost:8080/v1/chat/completions"
 
 
-# Rung C2 (boxmaker): also send the scene photo + this segment's mask, so a
-# generator that accepts them (SAM 3D) reconstructs the real object instead of
-# the inpainted crop. Off by default; stock Hunyuan3D ignores unknown fields.
-_SEND_PHOTO_MASK = os.environ.get("SCENEWEAVE_GEN3D_PHOTO_MASK") == "1"
+# boxmaker rungs C/D: also send the object's context — the original scene photo,
+# this object's mask (photo-sized) and its label — so a 3D server that wants them
+# can use them (SAM 3D C2 builds from photo + mask; the SAM 3 matte prompts with the
+# label). Off by default; stock Hunyuan3D ignores unknown fields.
+_SEND_CONTEXT = os.environ.get("SCENEWEAVE_GEN3D_CONTEXT") == "1"
 
 
-def _photo_mask(results: dict, seg: dict, seg_dir: Path) -> "tuple[Path, Path] | None":
-    """(scene photo, segment mask PNG) for SCENEWEAVE_GEN3D_PHOTO_MASK=1, else None."""
-    if not _SEND_PHOTO_MASK:
+def _gen3d_context(photo, mask, label) -> "dict | None":
+    """{photo, mask, label} for SCENEWEAVE_GEN3D_CONTEXT=1, else None. Missing files are
+    left out (logged); the label is sent regardless."""
+    if not _SEND_CONTEXT:
         return None
-    photo, mask = results.get("image"), seg.get("mask_file")
-    if not photo or not mask:
-        print("  [c2] no photo/mask recorded for this segment — sending the crop only")
-        return None
-    photo, mask = Path(photo), seg_dir / mask
-    if not (photo.exists() and mask.exists()):
-        print(f"  [c2] missing {photo if not photo.exists() else mask} — sending the crop only")
-        return None
-    return photo, mask
+    ctx = {"label": label or None}
+    for key, p in (("photo", photo), ("mask", mask)):
+        if p and Path(p).exists():
+            ctx[key] = Path(p)
+        elif p:
+            print(f"  [context] {key} not found: {p} — not sent")
+    if "mask" in ctx and "photo" not in ctx:
+        del ctx["mask"]                      # a mask is meaningless without its photo
+    return ctx
+
+
+def _seg_context(results: dict, seg: dict, seg_dir: Path) -> "dict | None":
+    """Context for a segmented object: results["image"], its mask_file, phrase or type."""
+    mask = seg.get("mask_file")
+    return _gen3d_context(results.get("image"), seg_dir / mask if mask else None,
+                          seg.get("phrase") or seg.get("type"))
 
 
 class HunyuanUnmeshableError(Exception):
@@ -83,7 +92,7 @@ def _hunyuan_available(server: str = HUNYUAN_SERVER) -> bool:
 def _generate_hunyuan(image_path: Path, glb_path: Path,
                       server: str = HUNYUAN_SERVER,
                       texture: bool = True,
-                      photo_mask: "tuple[Path, Path] | None" = None) -> bool:
+                      context: "dict | None" = None) -> bool:
     """Generate a GLB via the Hunyuan3D API server. Returns True on success.
 
     Under SCENEWEAVE_HUNYUAN_ONLY, if the request fails because
@@ -108,9 +117,11 @@ def _generate_hunyuan(image_path: Path, glb_path: Path,
             # (e.g. 384) when a large GPU is available.
             _octree = int(os.environ.get("SCENEWEAVE_HUNYUAN_OCTREE", "128") or 128)
             _req = {"image": img_b64, "texture": texture, "octree_resolution": _octree}
-            if photo_mask:
-                _req["photo"] = base64.b64encode(photo_mask[0].read_bytes()).decode()
-                _req["mask"] = base64.b64encode(photo_mask[1].read_bytes()).decode()
+            for _k in ("photo", "mask"):
+                if context and context.get(_k):
+                    _req[_k] = base64.b64encode(Path(context[_k]).read_bytes()).decode()
+            if context and context.get("label"):
+                _req["label"] = context["label"]
             _fc = os.environ.get("SCENEWEAVE_HUNYUAN_FACECOUNT")
             if _fc:
                 _req["face_count"] = int(_fc)
@@ -508,7 +519,7 @@ def run(
             gen_ok = False
             try:
                 gen_ok = _generate_hunyuan(src, glb_path,
-                                           photo_mask=_photo_mask(data, seg, seg_dir))
+                                           context=_seg_context(data, seg, seg_dir))
             except HunyuanUnmeshableError as e:
                 print(f"  [hunyuan] {e}")
                 if reinpainted_for_404:
@@ -522,7 +533,7 @@ def run(
                 src = new_src
                 try:
                     gen_ok = _generate_hunyuan(src, glb_path,
-                                               photo_mask=_photo_mask(data, seg, seg_dir))
+                                               context=_seg_context(data, seg, seg_dir))
                 except HunyuanUnmeshableError as e2:
                     print(f"  [hunyuan] still unmeshable after re-inpaint: {e2}")
                     gen_ok = False

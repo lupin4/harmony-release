@@ -420,7 +420,7 @@ def _inpaint_optional(crop_path: Path, mask_path: Path,
 # ── Step 4: Hunyuan3D GLB generation ──────────────────────────────────────────
 
 def _generate_glb(image_path: Path, glb_path: Path,
-                  texture: bool = True) -> bool:
+                  texture: bool = True, context: "dict | None" = None) -> bool:
     from object_placement.furniture.object_generation import (
         _generate_hunyuan, _hunyuan_available,
     )
@@ -428,7 +428,7 @@ def _generate_glb(image_path: Path, glb_path: Path,
         print("  [hunyuan] server not reachable — skipping generation")
         return False
     glb_path.parent.mkdir(parents=True, exist_ok=True)
-    return _generate_hunyuan(image_path, glb_path, texture=texture)
+    return _generate_hunyuan(image_path, glb_path, texture=texture, context=context)
 
 
 # ── Step 5: pick which furniture this missing item belongs on ────────────────
@@ -1092,7 +1092,9 @@ def run(output_dir: "str | Path",
         # --- 3c. Generate GLB ---
         glb_path = obj_dir / f"{type_safe}_00.glb"
         if not glb_path.exists():
-            ok = _generate_glb(glb_src, glb_path, texture=not no_texture)
+            from object_placement.furniture.object_generation import _gen3d_context
+            ok = _generate_glb(glb_src, glb_path, texture=not no_texture,
+                               context=_gen3d_context(ref_photo_path, mask_path, type_))
             if not ok:
                 print(f"  [hunyuan] generation failed for '{type_}' — skipping")
                 continue

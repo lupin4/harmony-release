@@ -27,7 +27,7 @@ from object_placement.furniture.object_generation import (
     HunyuanUnmeshableError,
     _generate_hunyuan,
     _hunyuan_available,
-    _photo_mask,
+    _seg_context,
 )
 
 
@@ -148,7 +148,7 @@ def run(
         gen_ok = False
         try:
             gen_ok = _generate_hunyuan(src, glb_path, texture=texture,
-                                       photo_mask=_photo_mask(data, seg, decor_dir / "segmented"))
+                                       context=_seg_context(data, seg, decor_dir / "segmented"))
         except HunyuanUnmeshableError as e:
             print(f"  [hunyuan] {e}")
             new_src = _reinpaint_opaque(out_dir, seg_idx)
@@ -157,7 +157,7 @@ def run(
                 continue
             try:
                 gen_ok = _generate_hunyuan(new_src, glb_path, texture=texture,
-                                           photo_mask=_photo_mask(data, seg, decor_dir / "segmented"))
+                                           context=_seg_context(data, seg, decor_dir / "segmented"))
             except HunyuanUnmeshableError as e2:
                 print(f"  [hunyuan] still unmeshable after re-inpaint: {e2}")
                 gen_ok = False
