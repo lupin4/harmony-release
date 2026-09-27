@@ -77,7 +77,7 @@ def shear_angle(bgr: np.ndarray, min_deg: float = 2.0, max_deg: float = 15.0,
                             minLineLength=int(W * 0.20), maxLineGap=15)
     angs = []
     if lines is not None:
-        for x1, y1, x2, y2 in lines[:, 0]:
+        for x1, y1, x2, y2 in lines.reshape(-1, 4):   # OpenCV 5 returns (N, 4), 4.x (N, 1, 4)
             if abs(x2 - x1) < abs(y2 - y1):
                 continue                                   # keep horizontal-ish
             a = np.degrees(np.arctan2(y2 - y1, x2 - x1))
