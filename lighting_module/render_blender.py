@@ -163,9 +163,56 @@ def _collect_glass_objects(out: Path) -> list[dict]:
     return glass
 
 
+def _lum(p) -> float:
+    """Mean luminance of an image (thumbnail), 0..1."""
+    import numpy as _np
+    from PIL import Image as _Im
+    im = _Im.open(p).convert("RGB")
+    im.thumbnail((900, 900))
+    return float((_np.asarray(im, float) / 255.0 @ [0.2126, 0.7152, 0.0722]).mean())
+
+
+def _reference_image(out: Path) -> Path | None:
+    """The scene's input photo: main.py keeps a copy named after the scene dir."""
+    for _ext in (".png", ".jpg", ".jpeg", ".webp", ".avif"):
+        _c = out / f"{out.name}{_ext}"
+        if _c.exists():
+            return _c
+    _cands = [p for p in out.glob("*") if p.suffix.lower() in
+              (".png", ".jpg", ".jpeg") and not p.name.startswith(("render_", "manhattan_"))
+              and "texture" not in p.name and "empty_room" not in p.name]
+    return _cands[0] if _cands else None
+
+
+def _probe_exposure(out: Path, cfg: dict, cfg_path: Path, cmd: list) -> float | None:
+    """boxmaker: render a low-sample probe and return the EV that matches the photo's
+    brightness (0.0 when already within tolerance); None when there is no photo."""
+    ref = _reference_image(out)
+    if ref is None:
+        return None
+    import numpy as _np
+    full = cfg["samples"]
+    cfg["samples"] = int(os.environ.get("SCENEWEAVE_RENDER_PROBE_SAMPLES", "16"))
+    cfg_path.write_text(json.dumps(cfg, indent=2))
+    subprocess.run(cmd, check=True)
+    cfg["samples"] = full
+    l_ref, l_out = _lum(ref), _lum(cfg["output_png"])
+    ratio = l_out / max(l_ref, 1e-6)
+    if abs(ratio - 1.0) <= float(os.environ.get("SCENEWEAVE_EXPOSURE_TOL", "0.25")) or l_out <= 1e-5:
+        print(f"[blender] probe: render/ref luminance = {ratio:.2f}, exposure ok")
+        return 0.0
+    ev = float(_np.clip(_np.log2(max(l_ref, 1e-4) / max(l_out, 1e-4)), -3.0, 3.0))
+    print(f"[blender] probe: render/ref luminance = {ratio:.2f} → {ev:+.2f} EV")
+    return ev
+
+
 def render(out_dir: str | Path, sources: list[dict] | None = None,
-           output_path: str | Path | None = None, samples: int = 160,
+           output_path: str | Path | None = None, samples: int | None = None,
            exposure: float = 0.0, power_scale: float = 1.0) -> str:
+    # boxmaker: SCENEWEAVE_RENDER_SAMPLES sets the samples when the caller gives none
+    # (main.py's lighting stage). Default 160, as before.
+    if samples is None:
+        samples = int(os.environ.get("SCENEWEAVE_RENDER_SAMPLES", "160"))
     out = Path(out_dir)
     ldir = out / "lightings"
     ldir.mkdir(exist_ok=True)
@@ -395,6 +442,17 @@ def render(out_dir: str | Path, sources: list[dict] | None = None,
     script = Path(__file__).parent / "_blender_cycles.py"
     cmd = [blender, "--background", "--python", str(script), "--", str(cfg_path)]
     print(f"[blender] {len(blender_lights)} light(s) → {cfg['output_png']}")
+    # boxmaker: SCENEWEAVE_RENDER_PROBE=1 finds the exposure on a cheap low-sample probe,
+    # so the full render runs once at the matched exposure instead of twice when the
+    # first full render misses the photo's brightness. Off by default.
+    if (os.environ.get("SCENEWEAVE_RENDER_PROBE") == "1"
+            and os.environ.get("SCENEWEAVE_NO_EXPOSURE_MATCH") != "1"):
+        ev = _probe_exposure(out, cfg, cfg_path, cmd)
+        if ev is not None:
+            cfg["exposure"] = float(exposure) + ev
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+            subprocess.run(cmd, check=True)
+            return cfg["output_png"]
     subprocess.run(cmd, check=True)
 
     # ── exposure match against the reference photograph ──────────────────────
@@ -409,27 +467,10 @@ def render(out_dir: str | Path, sources: list[dict] | None = None,
         return cfg["output_png"]
     try:
         import numpy as _np
-        from PIL import Image as _Im
-
-        def _lum(p):
-            im = _Im.open(p).convert("RGB")
-            im.thumbnail((900, 900))
-            return float((_np.asarray(im, float) / 255.0
-                          @ [0.2126, 0.7152, 0.0722]).mean())
 
         # The scene dir keeps a canonical copy of the input named after itself
         # (main.py copies it there so --rerun-dir is self-contained).
-        _ref = None
-        for _ext in (".png", ".jpg", ".jpeg", ".webp", ".avif"):
-            _c = out / f"{out.name}{_ext}"
-            if _c.exists():
-                _ref = _c
-                break
-        if _ref is None:
-            _cands = [p for p in out.glob("*") if p.suffix.lower() in
-                      (".png", ".jpg", ".jpeg") and not p.name.startswith(("render_", "manhattan_"))
-                      and "texture" not in p.name and "empty_room" not in p.name]
-            _ref = _cands[0] if _cands else None
+        _ref = _reference_image(out)
         if _ref is None:
             print("[blender] exposure match skipped: no reference image found")
         if _ref and Path(_ref).exists():
