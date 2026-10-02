@@ -27,6 +27,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from object_placement.furniture.material_properties import _keeps_own_factors
 from object_placement.vlm_backend import vlm_post as _vlm_post
 
 
@@ -146,8 +147,9 @@ def apply_to_glb(glb_path: str | Path, props: dict) -> bool:
     for mat in g.materials:
         if mat.pbrMetallicRoughness is None:
             mat.pbrMetallicRoughness = PbrMetallicRoughness()
-        mat.pbrMetallicRoughness.metallicFactor = float(props["metallic"])
-        mat.pbrMetallicRoughness.roughnessFactor = float(props["roughness"])
+        if not _keeps_own_factors(mat):
+            mat.pbrMetallicRoughness.metallicFactor = float(props["metallic"])
+            mat.pbrMetallicRoughness.roughnessFactor = float(props["roughness"])
         ext = mat.extensions if isinstance(mat.extensions, dict) else {}
         ext["KHR_materials_ior"] = {"ior": float(props["ior"])}
         mat.extensions = ext

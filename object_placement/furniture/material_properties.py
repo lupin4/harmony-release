@@ -29,6 +29,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 from pathlib import Path
 
@@ -170,6 +171,16 @@ def estimate_material(image_path: str | Path, obj_type: str,
     }
 
 
+def _keeps_own_factors(mat) -> bool:
+    """boxmaker: under SCENEWEAVE_KEEP_PBR_MAPS=1 a material that carries its own
+    metallicRoughnessTexture (TRELLIS.2, Hunyuan3D-2.1 Paint) keeps the generator's
+    factors. In glTF the factor multiplies the map, so one VLM value per object would
+    flatten it (metal 0 erases the metal). Off by default."""
+    pbr = mat.pbrMetallicRoughness
+    return (os.environ.get("SCENEWEAVE_KEEP_PBR_MAPS") == "1"
+            and pbr is not None and pbr.metallicRoughnessTexture is not None)
+
+
 def apply_to_glb(glb_path: str | Path, props: dict) -> bool:
     """Write metallic/roughness + KHR_materials_ior, and (for transmissive
     objects) KHR_materials_transmission + KHR_materials_volume, onto every
@@ -188,8 +199,9 @@ def apply_to_glb(glb_path: str | Path, props: dict) -> bool:
     for mat in g.materials:
         if mat.pbrMetallicRoughness is None:
             mat.pbrMetallicRoughness = PbrMetallicRoughness()
-        mat.pbrMetallicRoughness.metallicFactor = float(props["metallic"])
-        mat.pbrMetallicRoughness.roughnessFactor = float(props["roughness"])
+        if not _keeps_own_factors(mat):
+            mat.pbrMetallicRoughness.metallicFactor = float(props["metallic"])
+            mat.pbrMetallicRoughness.roughnessFactor = float(props["roughness"])
         ext = mat.extensions if isinstance(mat.extensions, dict) else {}
         ext["KHR_materials_ior"] = {"ior": float(props["ior"])}
         if transmissive:
